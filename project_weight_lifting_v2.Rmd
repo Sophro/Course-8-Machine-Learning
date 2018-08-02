@@ -1,0 +1,297 @@
+---
+title: "Predicting Training Activity Quality"
+output:
+  html_document:
+    df_print: paged
+  pdf_document:
+    fig_caption: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+    ```{r set-options, echo=FALSE, cache=FALSE}
+options(width = 1000)
+```
+
+## Introduction
+There are many scientifically proved positive consequences of physical activity on human health.  On the other hand, to be effective and to avoid injuries the training technique has to be performed correctly. The presence of a personal coach can help but its cost rapidly escalate with the number of athletes. The use of ambient or on-body sensors can reduce the need of personals and improve the quality of exercises at the same time. The qualitative activity recognition, i.e. quantifying how well an activity is performed, automatically, i.e. without human intervention, is the aim of this project. The data used for this analisys are taken from Ref. 1 and a detailed description of the full experiment can be found in the same reference.
+
+## Data Set Description 
+
+Data from four body sensors are used to build the full data set. The sensors are mounted in the users' glove, armband, belt, and dumbbell. Participants were asked to perform 10 times a specified exercise in 5 different fashions, defined as class A,B,C,D,E. Class A corresponds to the execution of the exercise exactly according to the specification, while the other four classes correspond to common mistakes. The exercises were performed by six male participants supervised by an experienced trainer to assure the execution was performed exactly as required. 
+
+The full training data set contains 19622 observations on 161 variables
+
+```{r include = TRUE}
+training <- read.csv("./training_orig.csv")
+testing <- read.csv("./testing_orig.csv")
+dim(training)
+```
+The data set structure, the class of the variables and their average and extremes values can be checked in detail with the commands: 
+```
+str(training)
+summary(training)
+
+```
+## Exploratory data analysis
+
+The training data set is copied in a dummy "dat" data frame on which a preliminary exploratory analysis is performed.  The variable "classe" is a factor with 5 levels: A,B,C,D and E. 
+```{r include = TRUE}
+dat <- training
+class(dat$classe)
+levels(dat$classe)
+```
+
+First of all, it is useful to check if there are NA values and counts how many there are in each columns of the data set : 
+```
+sapply(dat, function(x) sum(is.na(x)))
+```
+It appears that there are only columns with 0 NA or with 19216 NA. The columns with this huge amount of NA (97% of the rows) can be removed from the data, and the remaining set saved in dat_small, having 94 columns and no NA. 
+```{r include = TRUE}
+dat_small <- dat[, colSums(!is.na(dat)) >= 19215]
+#sapply(dat_small, function(x) sum(is.na(x))) # number of NA left = 0 
+dim(dat_small)
+```
+
+Performing a Near Zero Variance Analysis we see that there are no Zero Variance values but many with near zero variance. We can removed these columns, hence reducing now this filtered data set to 60 columns. 
+```{r include = TRUE , message = FALSE}
+library(caret)
+```
+```{r include = TRUE}
+nzv <- nearZeroVar(dat_small)
+filter_dat <- dat_small[,-nzv]
+dim(filter_dat)
+```
+Of this data set we keep only the numeric columns, eliminating the non numeric. These are anyway not useful for this specific analysis containing only the timestamp at which the exercises were performed, the names of the athletes, the rows numbers and num_window. The final data set to be used for models will also include the "classe" factor.  
+
+```{r include = TRUE}
+smaller_dat <- subset(filter_dat, select = -c(X,X.1,user_name,raw_timestamp_part_1,
+                                        raw_timestamp_part_2, cvtd_timestamp, num_window, classe))
+dim(smaller_dat) # only numerical variables (19622 x 52)
+
+```
+It is also possible and useful to check the correlation between features, removing the features having a coefficient of correlation higher than a certain threshold. We can select, for example, a threshold of  0.75, removing the features with a correlation higher than this. Removing these features the data set is reduced to 31 features instead of 52.
+
+```{r include = TRUE}
+dat_Cor <- cor(smaller_dat)
+highlyCor <- findCorrelation(dat_Cor, cutoff = .75) # shows the features with more 0.75 corr
+smaller_uncor <- smaller_dat[,-highlyCor] # remove from data set the correlated features and keep only uncorrelated
+dim(smaller_uncor) # now 31 features instead of 52
+```
+Now we can select the final data set to be used for the following analysis. 
+This can be either a data set with 52 features (some of them correlated) or a smaller set with only 31 uncorrelated features, depending on how the final data set is selected:
+
+```{r include = TRUE}
+#final_dat <- cbind(smaller_dat,classe=dat$classe) # (19622 x 52)
+# or,  using uncorrelated features:
+final_dat  <- cbind(smaller_uncor,classe=dat$classe) #(19622 x 31)
+```
+Using the dplyr package it is possible to randomly select n rows from this data set. We can start with a smaller set, for example, using only 2000 rows to perform preliminary checks and test the procedure and than increase to 5000 or more rows for the calculation of the final results.
+```{r include = TRUE, message = FALSE}
+library(dplyr) # for sampling n rows from a table
+```
+```{r include = TRUE}
+final_dat <- sample_n(final_dat, 3000) 
+dim(final_dat)
+```
+Using than the caret package, it is possible to partition this data set in smaller training and validation sets used to train and validate the models. We can select, for example, 70% of data for the training and the remaining 30% for validation:
+```{r include = TRUE}
+library(caret)
+```
+```{r include = TRUE}
+inTrain <- createDataPartition(y= final_dat$classe, p=0.7, list=FALSE)
+dat_train <- final_dat[inTrain,] # (2101  x 53) for training
+dat_valid  <- final_dat[-inTrain,] # (899  53)   for validation
+dim(dat_train)
+dim(dat_valid)
+```
+Finally, the model will be tested on the testing set after removing the unused columns since it must have the same columns as the training set. 
+```{r include = TRUE}
+col_sel <- colnames(dat_train)
+#sub_testing <- subset(testing, select = c(col_sel[1:52]))   # testing does NOT have column classe
+sub_testing <- subset(testing, select = c(col_sel[1:31]))   # testing does NOT have column classe
+```
+## Models building
+
+Using the randomForest package with default parameters, we can calculate a reference model. We also write the processing time as the difference of proc.time() at the start and at the end of the model calculation:
+
+```{r include = TRUE, message = FALSE }
+library("randomForest")
+```
+```{r include = TRUE}
+# ---- Model 0
+tt <- proc.time()
+model_rfm <- randomForest(classe ~ ., dat_train ) #, # by default number of trees = 500 
+proc.time() - tt
+```
+
+This basic model gives already a low out-of-bag estimate of error rate of 3.8%, taking only between 2 to 8 seconds to run (on an INTEL core i5-3320M CPU @2.6GHz), depending on the number of instances selected (from 200 up to 5000).  
+It is possible to get the features importances sorting them in decreasing order and selecting, for example, the first 5, shown in the table below. The importances of all the features, related to the mean decreasing Gini coefficient, are shown in Fig.1 in the Appendix.
+
+```{r include = TRUE}
+imp_rfm <- as.data.frame(cbind(rownames(model_rfm$importance), as.numeric(model_rfm$importance)), stringsAsFactors = FALSE) # get the importances in a date frame with names
+colnames(imp_rfm) <- c("sensor", "MeanDecreaseGini")
+imp_rfm$MeanDecreaseGini <- as.numeric(imp_rfm$MeanDecreaseGini)
+imp_rfm_rank <- imp_rfm[order(imp_rfm$MeanDecreaseGini, decreasing = T),] # gini in decreasing order 
+imp_rfm_rank[1:5,] # select only the first xx
+```
+
+We can now built a new, simplified, model using only these 5 most important features:
+```{r include = TRUE}
+# Model 1:
+tt <- proc.time()
+model_rfm1 <- randomForest(classe ~  yaw_belt + magnet_dumbbell_z + pitch_forearm + magnet_belt_y + roll_dumbbell, dat_train ) #, 
+proc.time() - tt
+```
+This symplified model, runs in less than 5 seconds and has an out-of-bag error rate of about 11% (using 2000 instances). 
+
+We can also built other models using the caret package with Random Forest performing different types of bootstrap or cross validation to reduce the variance of the results. In Random forest the algorithm used to learn the sub-trees are changed so that the resulting predictions from all of the subtrees are less correlated [Ref.2].
+
+Bootstrap resampling involves taking random samples from data set with re-selection (i.e. selecting the same value multiple times). The number of resampling iteration can be given in trControl.
+
+```{r include = TRUE}
+# ---- model 2: using caret RF with bootstrap 
+my_control <- trainControl(method="boot", number = 10) 
+ttt <- proc.time()
+model_boo <- train(classe ~ ., data=dat_train, method="rf", trControl = my_control)
+proc.time() - ttt
+# print(model_boo)
+```
+The model is optimized finding the maximum average accuracy (0.943) using only 2 features.
+
+The goal of cross-validation is to test the model's ability to predict new data that were not used in estimating it, in order to flag problems like overfitting and to give an insight on how the model will generalize to an independent dataset.  In k-fold cross-validation, the original sample is randomly partitioned into k equal sized subsamples. Of these k subsamples, a single subsample is retained as the validation data for testing the model, and the remaining k minus 1 subsamples are used as training data. 
+A  model can be built using, for example, k=10 using 9 smaller training sets and evaluating it on the tenth. 
+
+```{r include = TRUE}
+# ---- model 3: using caret RF with cross validation
+# needs two parameters:
+# mtry: Number of variables randomly sampled as candidates at each split.
+# ntree: Number of trees to grow = number of samples = how many rows to use .
+my_control <- trainControl(method="cv", number =10) 
+ttt <- proc.time()
+model_cv <- train(classe ~ ., data=dat_train, method="rf", trControl = my_control)
+proc.time() - ttt
+# print(model_cv)
+```
+
+Thecross validation can be repeated many times, choosing also this parameter.
+
+```{r include = TRUE}
+# ---- model 4: using caret RF with repeated cross validation
+my_control <- trainControl(method="repeatedcv", number =10, repeats = 3) 
+metric = "Accuracy" # is the default ...probably
+ttt <- proc.time()
+model_rcv <- train(classe ~ ., data=dat_train, method="rf", metric=metric,trControl= my_control)
+proc.time() - ttt
+```
+
+These two models give almost the same accuracy (about 0.95) using 16 features but the time ti run them is much higher, from 100 to 600 seconds. 
+
+```{r include = TRUE}
+# ---- model 5: using caret RF with leave One Out Cross validation
+my_control <- trainControl(method="oob") 
+my_grid <- expand.grid(mtry = 1:52)
+ttt <- proc.time()
+model_oob <- train(classe ~ ., data=dat_train, method="rf", trControl= my_control, tunegrid = my_grid)
+proc.time() - ttt
+```
+
+
+## Making predictions and check accuracy for in and out of sample
+With these models (model_rfm, model_rfm1, model_cv, model_rcv and model_oob) we can make predictions and calculate the accuracy and other parameters looking at the confusion Matrix. 
+
+```{r include = TRUE}
+# calculate the model accuracy and error
+cM0_in  <- confusionMatrix(dat_train$classe, predict(model_rfm, newdata= dat_train))
+cM0_out <- confusionMatrix(dat_valid$classe, predict(model_rfm, newdata= dat_valid))
+pred_rfm   <- as.factor(predict(model_rfm, newdata= sub_testing))
+```
+```{r include = TRUE, echo = FALSE}
+cM1_in  <- confusionMatrix(dat_train$classe, predict(model_rfm1, newdata= dat_train))
+cM1_out <- confusionMatrix(dat_valid$classe, predict(model_rfm1, newdata= dat_valid))
+pred_rfm1   <- as.factor(predict(model_rfm1, newdata= sub_testing))
+
+cM2_in  <- confusionMatrix(dat_train$classe, predict(model_boo, newdata= dat_train))
+cM2_out <- confusionMatrix(dat_valid$classe, predict(model_boo, newdata= dat_valid))
+pred_boo   <- as.factor(predict(model_boo, newdata= sub_testing))
+
+cM3_in  <- confusionMatrix(dat_train$classe, predict(model_cv, newdata= dat_train))
+cM3_out <- confusionMatrix(dat_valid$classe, predict(model_cv, newdata= dat_valid))
+pred_cv   <- as.factor(predict(model_cv, newdata= sub_testing))
+
+cM4_in  <- confusionMatrix(dat_train$classe, predict(model_rcv, newdata= dat_train))
+cM4_out <- confusionMatrix(dat_valid$classe, predict(model_rcv, newdata= dat_valid))
+pred_rcv   <- as.factor(predict(model_rcv, newdata= sub_testing))
+
+cM5_in  <- confusionMatrix(dat_train$classe, predict(model_oob, newdata= dat_train))
+cM5_out <- confusionMatrix(dat_valid$classe, predict(model_oob, newdata= dat_valid))
+pred_oob   <- as.factor(predict(model_oob, newdata= sub_testing))
+
+```
+
+```{r include = TRUE}
+model0 <- as.data.frame(cbind(signif(cM0_in$overall['Accuracy'],2), signif(cM0_out$overall['Accuracy'], 3), "rfm")) # model_rfm
+```
+```{r include = TRUE, echo = FALSE}
+model1 <- as.data.frame(cbind(signif(cM1_in$overall['Accuracy'],2), signif(cM1_out$overall['Accuracy'], 3),"rfm1")) # model_rfm1
+model2 <- as.data.frame(cbind(signif(cM2_in$overall['Accuracy'],2), signif(cM2_out$overall['Accuracy'], 3),"bootstrap")) # model_boo
+model3 <- as.data.frame(cbind(signif(cM3_in$overall['Accuracy'],2), signif(cM3_out$overall['Accuracy'], 3),"CV")) # model_cv
+model4 <- as.data.frame(cbind(signif(cM4_in$overall['Accuracy'],2), signif(cM4_out$overall['Accuracy'], 3),"repeated CV")) # model_rcv
+model5 <- as.data.frame(cbind(signif(cM5_in$overall['Accuracy'],2), signif(cM5_out$overall['Accuracy'], 3),"out of bag")) # model_loocv
+```
+
+We can built a final table comparing the performance of the models. The average error rate for the training set (in sample) and the validation set (out of sample). As shown in the tables below, all the models have an high accuracy for in sample (always very close or equal to 1)  while the out-of-sample accuracy is lower but anyway higher than 70% even using very few instances (200 in the table below).
+
+```{r echo=FALSE, out.width='60%', }
+knitr::include_graphics('./tab1.png')
+```
+We can use these models to predict the classes for the testing set. With fewer instances the predictions might differ in some cases, as shown below for the 20 samples using only 200 instances. 
+```{r echo=FALSE, out.width='60%', }
+knitr::include_graphics('./tab2.png')
+```
+
+Increasing the training data set dimension, the models' performance increase and the accuracy is very good also for out-of-sample, as shown below using 3000 instances. 
+
+```{r include = TRUE}
+final_table <- as.data.frame(rbind(model0, model1, model2, model3, model4, model5))
+colnames(final_table) <- c("in sample", "out sample", "model")
+
+```
+
+```{r include = TRUE}
+# print accuracy for all models
+print(final_table)
+```
+
+
+Also, all the predictions for the testing set agree perfectly well, as shown in the following table using 3000 instances. 
+```{r include = TRUE}
+# print predictions with testing:
+print(t(data.frame(pred_rfm,pred_rfm1,pred_boo,pred_cv,pred_rcv,pred_oob)), quote=F)
+```
+
+The time required to build the model varies from a minimum of less than 2 seconds for the rfm1 (but cannot predict correctly some cases)  to a maximum of about 300 seconds for the model with the repeated cross validation. For this specific problem of predicting the 5 classes it would be enough to use the refence Random Forest model which only takes 3 seconds and predict very well the classes for the 20 test cases. 
+
+```{r echo =FALSE, results ='asis'}
+library(knitr)
+# kable(table1, caption ="Models comparison")
+```
+
+## References
+[1]  http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har
+
+[2]  https://machinelearningmastery.com/bagging-and-random-forest-ensemble-algorithms-for-machine-learning/
+
+## Appendix 
+ \vspace{-5mm}
+ 
+```{r, fig.cap= "Most important features as calculated by Random Forest package", fig.height= 7,fig.width= 7,echo=FALSE}
+varImpPlot(model_rfm, main = "with RFM")
+```
+
+ \vspace{-9mm}
+ 
+``` {r, fig.cap= "Most important features as calculated by CARET package with RF method", fig.height= 7, fig.width= 7,echo=FALSE}
+plot(varImp(model_rcv, main = "with Caret RF"))
+```
